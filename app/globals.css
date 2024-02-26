@@ -25,3 +25,29 @@ body {
     )
     rgb(var(--background-start-rgb));
 }
+
+.transcription-container {
+  font-family: 'Arial', sans-serif;
+  line-height: 1.5;
+  color: #333;
+  max-width: 600px; /* Adjust the max-width as needed */
+  margin: 0 auto;
+}
+
+.transcription-entry {
+  margin-bottom: 15px; /* Space between entries */
+}
+
+.timestamp {
+  font-weight: bold;
+  margin-right: 5px;
+}
+
+.speaker {
+  font-weight: bold;
+  color: #1a1a1a;
+}
+
+.caption {
+  color: #4a4a4a;
+}

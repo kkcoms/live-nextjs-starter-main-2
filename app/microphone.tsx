@@ -12,30 +12,38 @@ import Dg from "./dg.svg";
 import Recording from "./recording.svg";
 import Image from "next/image";
 
+/**
+ * Component for handling microphone functionality.
+ */
 export default function Microphone() {
+  // Queue state for storing audio data
   const { add, remove, first, size, queue } = useQueue<any>([]);
+
+  // State variables for API key, connection, listening status, loading states, microphone status, and user media
   const [apiKey, setApiKey] = useState<CreateProjectKeyResponse | null>();
   const [connection, setConnection] = useState<LiveClient | null>();
   const [isListening, setListening] = useState(false);
-  const [isLoadingKey, setLoadingKey] = useState(true);
-  const [isLoading, setLoading] = useState(true);
   const [isProcessing, setProcessing] = useState(false);
   const [micOpen, setMicOpen] = useState(false);
   const [microphone, setMicrophone] = useState<MediaRecorder | null>();
   const [userMedia, setUserMedia] = useState<MediaStream | null>();
-  const [captions, setCaptions] = useState<{ [key: number]: { caption: string; timestamp: string } }>({});
+  const [captions, setCaptions] = useState<Array<{ caption: string; timestamp: string; speaker: string; isFinal: boolean }>>([]);
 
+
+  /**
+   * Toggles the microphone on/off.
+   */
   const toggleMicrophone = useCallback(async () => {
     if (microphone && userMedia) {
+      // Stop recording and close microphone
       setUserMedia(null);
       setMicrophone(null);
-
       microphone.stop();
     } else {
+      // Start recording and open microphone
       const userMedia = await navigator.mediaDevices.getUserMedia({
         audio: true,
       });
-
       const microphone = new MediaRecorder(userMedia);
       microphone.start(500);
 
@@ -57,15 +65,15 @@ export default function Microphone() {
   }, [add, microphone, userMedia]);
 
   useEffect(() => {
+    // Fetch API key
     if (!apiKey) {
-      console.log("getting a new api key");
+      //console.log("getting a new api key");
       fetch("/api", { cache: "no-store" })
         .then((res) => res.json())
         .then((object) => {
           if (!("key" in object)) throw new Error("No api key returned");
 
           setApiKey(object);
-          setLoadingKey(false);
         })
         .catch((e) => {
           console.error(e);
@@ -74,16 +82,17 @@ export default function Microphone() {
   }, [apiKey]);
 
   useEffect(() => {
+    // Connect to Deepgram API
     if (apiKey && "key" in apiKey) {
       console.log("connecting to deepgram");
       const deepgram = createClient(apiKey?.key ?? "");
       const connection = deepgram.listen.live({
         model: "nova-2",
         interim_results: true,
-        smart_format: false,
-        language: "es", 
+        smart_format: true,
+        language: "es-419",
         vad_events: true,
-        
+        diarize: true,
 
       });
 
@@ -99,56 +108,65 @@ export default function Microphone() {
         setConnection(null);
       });
 
-      // connection.on(LiveTranscriptionEvents.Transcript, (data) => {
-      //   console.log('Transcript data:', data);
-      
-      //   if (data.is_final) {
-      //     // Use the `start` property from the API response
-      //     const startSeconds = data.start; // This is the relative start time of the transcription
-      //     const formattedTimestamp = new Date(startSeconds * 1000).toISOString().substr(11, 8); // Convert to HH:MM:SS format
-      
-      //     const words = data.channel.alternatives[0].words;
-      //     const captionText = words
-      //       .map((word: any) => word.punctuated_word ?? word.word)
-      //       .join(" ");
-          
-      //     if (captionText !== "") {
-      //       // Append the new caption with its start time to the array
-      //       setCaptions(prevCaptions => [...prevCaptions, { caption: captionText, timestamp: formattedTimestamp }]);
-      //     }
-      //   }
-      // });
-      
       connection.on(LiveTranscriptionEvents.Transcript, (data) => {
         console.log('Transcript data:', data);
       
-        const startSeconds = data.start;
-        const minutes = Math.floor(startSeconds / 60);
-        const seconds = Math.floor(startSeconds % 60);
-        const formattedTimestamp = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+        // Assuming `data.channel` exists and has the required properties.
+        const alternatives = data.channel.alternatives[0];
+        const words = alternatives.words;
       
-        const words = data.channel.alternatives[0].words;
-        const captionText = words
-          .map((word: any) => word.punctuated_word ?? word.word)
-          .join(" ");
+        // Process only if we have words.
+        if (words && words.length > 0) {
+          const speaker = words[0].speaker; // Assuming all words in this transcript have the same speaker.
+          const startSeconds = words[0].start; // Start time of the first word.
       
-        if (captionText !== "") {
-          // Update the caption entry with either interim or final caption text
-          setCaptions(prevCaptions => ({
-            ...prevCaptions,
-            [startSeconds]: { caption: captionText, timestamp: formattedTimestamp }
-          }));
+          // Format as MM:SS
+          const minutes = Math.floor(startSeconds / 60);
+          const seconds = Math.floor(startSeconds % 60);
+          const formattedTimestamp = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+      
+          const captionText = words.map((word: { punctuated_word: any; word: any; }) => word.punctuated_word ?? word.word).join(" ");
+      
+          if (data.is_final) {
+            // Final results: replace interim results with final result
+            setCaptions((prevCaptions) => {
+              const newCaptions = prevCaptions.map(captionData =>
+                captionData.timestamp === formattedTimestamp && captionData.speaker === `Speaker ${speaker}`
+                  ? { ...captionData, caption: captionText, isFinal: true }
+                  : captionData
+              );
+      
+              // If it's a new final caption (not replacing an interim result), add it to the array
+              if (!newCaptions.find(captionData => captionData.timestamp === formattedTimestamp && captionData.speaker === `Speaker ${speaker}`)) {
+                newCaptions.push({ caption: captionText, timestamp: formattedTimestamp, speaker: `Speaker ${speaker}`, isFinal: true });
+              }
+      
+              return newCaptions;
+            });
+          } else {
+            // Interim results: add them to the array if not already present
+            setCaptions((prevCaptions) => {
+              const existingCaptionIndex = prevCaptions.findIndex(captionData => captionData.timestamp === formattedTimestamp && captionData.speaker === `Speaker ${speaker}`);
+              if (existingCaptionIndex !== -1 && !prevCaptions[existingCaptionIndex].isFinal) {
+                // Update the existing interim caption
+                const updatedCaptions = [...prevCaptions];
+                updatedCaptions[existingCaptionIndex] = { ...updatedCaptions[existingCaptionIndex], caption: captionText };
+                return updatedCaptions;
+              } else {
+                // Add a new interim caption
+                return [...prevCaptions, { caption: captionText, timestamp: formattedTimestamp, speaker: `Speaker ${speaker}`, isFinal: false }];
+              }
+            });
+          }
         }
-      });
-      
-      
+      }); // Add closing parenthesis and semicolon here
 
       setConnection(connection);
-      setLoading(false);
     }
   }, [apiKey]);
 
   useEffect(() => {
+    // Process the audio queue
     const processQueue = async () => {
       if (size > 0 && !isProcessing) {
         setProcessing(true);
@@ -169,13 +187,8 @@ export default function Microphone() {
     processQueue();
   }, [connection, queue, remove, first, size, isProcessing, isListening]);
 
-  if (isLoadingKey)
-    return (
-      <span className="w-full text-center">Loading temporary API key...</span>
-    );
-  if (isLoading)
-    return <span className="w-full text-center">Loading the app...</span>;
 
+  // Render the microphone component
   return (
     <div className="w-full relative">
       <div className="mt-10 flex flex-col align-middle items-center">
@@ -208,18 +221,19 @@ export default function Microphone() {
             }
           />
         </button>
-                  <div className="mt-20 p-6 text-xl text-center">
-                  {Object.entries(captions)
-    .sort(([start1], [start2]) => parseFloat(start1) - parseFloat(start2))
-    .map(([start, { caption, timestamp }], index) => (
-      <div key={start}>
-        <span>{timestamp}</span> - <span>{caption}</span>
+        <div className="transcription-container">
+  {captions.map((item, index) => (
+    <div key={index} className="transcription-entry">
+      <span className="speaker">{item.speaker}</span>
+      -
+      <span className="timestamp">{item.timestamp}</span>
+      - 
+      <span className="caption">{item.caption}</span>
+    </div>
+  ))}
+</div>
       </div>
-    ))
-}
-          </div>
-      </div>
-      <div
+      {/* <div
         className="z-20 text-white flex shrink-0 grow-0 justify-around items-center 
                   fixed bottom-0 right-5 rounded-lg mr-1 mb-5 lg:mr-5 lg:mb-5 xl:mr-10 xl:mb-10 gap-5"
       >
@@ -235,8 +249,7 @@ export default function Microphone() {
             isListening ? "fill-white drop-shadow-glowBlue" : "fill-gray-600"
           }
         />
-      </div>
+      </div> */}
     </div>
   );
 }
-
